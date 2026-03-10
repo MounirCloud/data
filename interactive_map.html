@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carte Interactive des Entreprises et Sites Miniers</title>
+    
+    <!-- CSS de Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <!-- CSS de Leaflet MarkerCluster -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css"/>
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #map-container { position: relative; width: 100%; height: 100vh; }
+        #map { width: 100%; height: 100%; }
+        /* Style amélioré pour la légende avec les filtres */
+        .info.legend { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.2); line-height: 24px; color: #333; max-height: 80vh; overflow-y: auto;}
+        .info.legend h4 { margin: 0 0 10px 0; font-size: 16px; color: #000; border-bottom: 2px solid #eee; padding-bottom: 5px; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 5px; cursor: pointer; transition: opacity 0.2s; }
+        .legend-item:hover { opacity: 0.8; }
+        .legend-item input[type="checkbox"] { margin-right: 8px; cursor: pointer; }
+        .legend-color { width: 14px; height: 14px; border-radius: 50%; display: inline-block; margin-right: 8px; border: 1px solid rgba(0,0,0,0.2); }
+        .custom-popup .leaflet-popup-content-wrapper { border-radius: 8px; }
+        .custom-popup .leaflet-popup-content { margin: 15px; }
+        .custom-popup h3 { margin: 0 0 5px 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 5px; }
+        .custom-popup p { margin: 5px 0; color: #555; font-size: 13px; }
+        .type-badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; margin-bottom: 5px; }
+        .commodity-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; background: #eee; color: #333; margin-right: 4px; border: 1px solid #ccc;}
+        .company-list-container { margin-top: 15px; border-top: 2px solid #eee; padding-top: 10px; }
+        .company-list-toggle { cursor: pointer; color: #3498db; font-weight: bold; font-size: 14px; user-select: none; }
+        .company-list-toggle:hover { text-decoration: underline; }
+        .company-list { display: none; margin-top: 10px; max-height: 250px; overflow-y: auto; font-size: 13px; }
+        .company-list.active { display: block; }
+        .company-item { padding: 4px 0; border-bottom: 1px solid #f5f5f5; cursor: pointer; display: flex; align-items: center;}
+        .company-item:hover { background-color: #f9f9f9; }
+        .company-item-color { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+    </style>
+</head>
+<body>
+
+<div id="map-container"><div id="map"></div></div>
+
+<!-- JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+
+<script>
+    var map = L.map('map').setView([20, 0], 2);
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+        subdomains: 'abcd',
+        maxZoom: 19
+    }).addTo(map);
+
+    const colors = {
+        'Major Miner HQ': '#2ecc71',         // Vert
+        'EPCM': '#e74c3c',                   // Rouge
+        'Engineering Consultant': '#3498db', // Bleu
+        'Equipment Provider': '#f39c12',     // Orange
+        'Technology Provider': '#9b59b6',    // Violet
+        'Mining Site (Copper)': '#d35400',   // Orange Foncé / Cuivre
+        'Mining Site (Gold)': '#f1c40f',     // Or / Jaune
+        'Mining Site (Iron)': '#7f8c8d',     // Acier / Gris
+        'Mining Site (Lithium)': '#00cec9',  // Cyan
+        'Mining Site (Diamond)': '#81ecec',  // Bleu très clair
+        'Mining Site (Coal/Uranium/Other)': '#2d3436', // Noir/Gris Foncé
+        'Other': '#bdc3c7'
+    };
+
+    function getCustomIcon(type) {
+        const color = colors[type] || colors['Other'];
+        const svgIcon = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="30" height="42">
+                <path fill="${color}" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                <circle cx="12" cy="9" r="3" fill="#ffffff"/>
+            </svg>`;
+        return L.divIcon({ className: "custom-pin", html: svgIcon, iconSize: [30, 42], iconAnchor: [15, 42], popupAnchor: [0, -40] });
+    }
+
+    const companiesData = [
+        // === HQ ET BUREAUX ===
+        // === BHP NETWORK ===
+        { name: "BHP - HQ (Melbourne)", lat: -37.8136, lng: 144.9631, type: "Major Miner HQ", description: "Global headquarters.", hq: "Melbourne, Australie", groupId: "BHP", isHQ: true },
+        { name: "BHP - London", lat: 51.4984, lng: -0.1436, type: "Major Miner HQ", description: "Corporate office.", hq: "London, UK", groupId: "BHP" },
+        { name: "BHP - Washington DC", lat: 38.8977, lng: -77.0326, type: "Major Miner HQ", description: "Corporate office.", hq: "Washington DC, USA", groupId: "BHP" },
+        { name: "BHP - Singapore", lat: 1.2801, lng: 103.8540, type: "Major Miner HQ", description: "Sales and Marketing head office.", hq: "Singapore", groupId: "BHP" },
+        { name: "BHP - Gurgaon", lat: 28.4595, lng: 77.0266, type: "Major Miner HQ", description: "Sales and Marketing office.", hq: "Gurgaon, Inde", groupId: "BHP" },
+        { name: "BHP - Manila", lat: 14.5547, lng: 121.0244, type: "Major Miner HQ", description: "Global Business Services.", hq: "Manila, Philippines", groupId: "BHP" },
+        { name: "BHP - Kuala Lumpur", lat: 3.1187, lng: 101.6773, type: "Major Miner HQ", description: "Global Business Services.", hq: "Kuala Lumpur, Malaisie", groupId: "BHP" },
+        { name: "BHP - Shanghai", lat: 31.2222, lng: 121.4725, type: "Major Miner HQ", description: "Sales and Marketing office.", hq: "Shanghai, Chine", groupId: "BHP" },
+        { name: "BHP - Tokyo", lat: 35.6830, lng: 139.7735, type: "Major Miner HQ", description: "Sales and Marketing office.", hq: "Tokyo, Japon", groupId: "BHP" },
+        { name: "BHP - Belo Horizonte", lat: -19.9327, lng: -43.9351, type: "Major Miner HQ", description: "Corporate Office.", hq: "Belo Horizonte, Brésil", groupId: "BHP" },
+        { name: "BHP - Brisbane (Coal HQ)", lat: -27.4646, lng: 153.0305, type: "Major Miner HQ", description: "Coal head office.", hq: "Brisbane, Australie", groupId: "BHP" },
+        { name: "BHP - Brisbane (Coal office)", lat: -27.4665, lng: 153.0300, type: "Major Miner HQ", description: "Coal office.", hq: "Brisbane, Australie", groupId: "BHP" },
+        { name: "BHP - Perth", lat: -31.9545, lng: 115.8560, type: "Major Miner HQ", description: "Iron ore & Nickel head office.", hq: "Perth, Australie", groupId: "BHP" },
+        { name: "BHP - Santiago", lat: -33.4074, lng: -70.5746, type: "Major Miner HQ", description: "Copper head office.", hq: "Santiago, Chili", groupId: "BHP" },
+        { name: "BHP - Iquique", lat: -20.2133, lng: -70.1503, type: "Major Miner HQ", description: "Copper office.", hq: "Iquique, Chili", groupId: "BHP" },
+        { name: "BHP - Lima", lat: -12.0911, lng: -77.0305, type: "Major Miner HQ", description: "Copper office.", hq: "Lima, Pérou", groupId: "BHP" },
+        { name: "BHP - Quito", lat: -0.1807, lng: -78.4678, type: "Major Miner HQ", description: "Copper office.", hq: "Quito, Equateur", groupId: "BHP" },
+        { name: "BHP - Adelaide", lat: -34.9285, lng: 138.6007, type: "Major Miner HQ", description: "Copper office (Olympic Dam HQ).", hq: "Adelaide, Australie", groupId: "BHP" },
+        { name: "BHP - Saskatoon", lat: 52.1332, lng: -106.6700, type: "Major Miner HQ", description: "Potash head office.", hq: "Saskatoon, Canada", groupId: "BHP" },
+        { name: "BHP - Toronto", lat: 43.6468, lng: -79.3789, type: "Major Miner HQ", description: "Potash office.", hq: "Toronto, Canada", groupId: "BHP" },
+        { name: "BHP - Tucson", lat: 32.3274, lng: -110.9789, type: "Major Miner HQ", description: "Legacy assets.", hq: "Tucson, USA", groupId: "BHP" },
+        { name: "Rio Tinto (Alcan) - Hub", lat: 45.5017, lng: -73.5673, type: "Major Miner HQ", description: "Centre administratif pour l'aluminium.", hq: "Montréal, Canada", groupId: "Rio Tinto" },
+        { name: "Rio Tinto - HQ (UK)", lat: 51.5074, lng: -0.1278, type: "Major Miner HQ", description: "Siège social mondial.", hq: "Londres, UK", groupId: "Rio Tinto", isHQ: true },
+        { name: "Vale - HQ", lat: -22.9068, lng: -43.1729, type: "Major Miner HQ", description: "Siège mondial, leader dans le minerai de fer.", hq: "Rio de Janeiro, Brésil", groupId: "Vale", isHQ: true },
+        { name: "Vale - Base Metals Hub", lat: 43.6532, lng: -79.3832, type: "Major Miner HQ", description: "Siège mondial des métaux de base de Vale.", hq: "Toronto, Canada", groupId: "Vale" },
+        { name: "Glencore - HQ", lat: 47.1954, lng: 8.5258, type: "Major Miner HQ", description: "Siège de la multinationale.", hq: "Baar, Suisse", groupId: "Glencore", isHQ: true },
+        { name: "Anglo American - HQ", lat: 51.5113, lng: -0.1065, type: "Major Miner HQ", description: "Siège de la compagnie minière transnationale.", hq: "Londres, UK", groupId: "Anglo American", isHQ: true },
+        { name: "Anglo American - SA Hub", lat: -26.2041, lng: 28.0473, type: "Major Miner HQ", description: "Bureau régional majeur pour l'Afrique du Sud.", hq: "Johannesbourg, Afrique du Sud", groupId: "Anglo American" },
+        { name: "Barrick Gold - HQ", lat: 43.6477, lng: -79.3815, type: "Major Miner HQ", description: "Siège social.", hq: "Toronto, Canada", groupId: "Barrick", isHQ: true },
+        { name: "Newmont - HQ", lat: 39.5994, lng: -104.8969, type: "Major Miner HQ", description: "Siège du plus grand producteur mondial d'or.", hq: "Denver, USA", groupId: "Newmont", isHQ: true },
+        { name: "Freeport-McMoRan - HQ", lat: 33.4484, lng: -112.0740, type: "Major Miner HQ", description: "Siège social mondial.", hq: "Phoenix, USA", groupId: "Freeport-McMoRan", isHQ: true },
+        { name: "Teck Resources - HQ", lat: 49.2827, lng: -123.1207, type: "Major Miner HQ", description: "Extraction et traitement.", hq: "Vancouver, Canada", groupId: "Teck", isHQ: true },
+        { name: "Antofagasta plc - HQ", lat: 51.5244, lng: -0.1417, type: "Major Miner HQ", description: "Siège social.", hq: "Londres, UK", groupId: "Antofagasta", isHQ: true },
+        { name: "Codelco - HQ", lat: -33.4489, lng: -70.6693, type: "Major Miner HQ", description: "Siège social.", hq: "Santiago, Chili", groupId: "Codelco", isHQ: true },
+        { name: "Fortescue Metals Group - HQ", lat: -31.9568, lng: 115.8653, type: "Major Miner HQ", description: "Siège social.", hq: "Perth, Australie", groupId: "Fortescue", isHQ: true },
+
+        { name: "Bechtel - HQ", lat: 38.9339, lng: -77.1773, type: "EPCM", description: "Leader global EPCM.", hq: "Reston, USA" },
+        { name: "Fluor - HQ", lat: 32.8872, lng: -96.9602, type: "EPCM", description: "Leader EPCM.", hq: "Irving, USA" },
+        { name: "SNC-Lavalin (AtkinsRéalis)", lat: 45.5034, lng: -73.5658, type: "EPCM", description: "Siège social.", hq: "Montréal, Canada" },
+        { name: "Worley - HQ", lat: -33.8390, lng: 151.2073, type: "EPCM", description: "EPCM.", hq: "Sydney, Australie" },
+        
+        { name: "Hatch - HQ", lat: 43.5890, lng: -79.6441, type: "Engineering Consultant", description: "Consultant ingénierie.", hq: "Mississauga, Canada" },
+        { name: "WSP / Golder - Hub", lat: 45.5017, lng: -73.5673, type: "Engineering Consultant", description: "Consultant.", hq: "Montréal, Canada" },
+        { name: "SRK Consulting - SA HQ", lat: -26.1367, lng: 28.0305, type: "Engineering Consultant", description: "Consultant.", hq: "Johannesbourg, Afrique du Sud" },
+        { name: "Stantec - HQ", lat: 53.5444, lng: -113.4909, type: "Engineering Consultant", description: "Consultant.", hq: "Edmonton, Canada" },
+        
+        { name: "Caterpillar - HQ", lat: 32.8872, lng: -96.9602, type: "Equipment Provider", description: "Fabricant matériel.", hq: "Irving, USA" },
+        { name: "Komatsu - HQ", lat: 35.6706, lng: 139.7335, type: "Equipment Provider", description: "Fabricant matériel.", hq: "Tokyo, Japon" },
+        { name: "Epiroc - HQ", lat: 59.3293, lng: 18.0686, type: "Equipment Provider", description: "Fabricant matériel.", hq: "Stockholm, Suède" },
+        { name: "Sandvik - HQ", lat: 59.3293, lng: 18.0686, type: "Equipment Provider", description: "Fabricant matériel.", hq: "Stockholm, Suède" },
+        
+        { name: "Hexagon Mining - HQ", lat: 32.2217, lng: -110.9265, type: "Technology Provider", description: "Logiciels.", hq: "Tucson, USA" },
+        { name: "Datamine - HQ", lat: -27.4698, lng: 153.0251, type: "Technology Provider", description: "Logiciels.", hq: "Brisbane, Australie" },
+        { name: "Seequent - HQ", lat: -43.5321, lng: 172.6362, type: "Technology Provider", description: "Logiciels 3D.", hq: "Christchurch, Nouvelle-Zélande" },
+
+        // === SITES MINIERS ===
+        { name: "Escondida", lat: -24.2683, lng: -69.0664, type: "Mining Site (Copper)", description: "La plus grande mine de cuivre au monde (BHP).", hq: "Chili", groupId: "BHP" },
+        { name: "Chuquicamata", lat: -22.3167, lng: -68.9333, type: "Mining Site (Copper)", description: "Immense mine à ciel ouvert et souterraine (Codelco).", hq: "Chili", groupId: "Codelco" },
+        { name: "Cerro Verde", lat: -16.5361, lng: -71.5975, type: "Mining Site (Copper)", description: "Majeure mine de cuivre porphyrique (Freeport-McMoRan).", hq: "Pérou", groupId: "Freeport-McMoRan" },
+        { name: "Grasberg", lat: -4.0545, lng: 137.1147, type: "Mining Site (Copper)", description: "Gigantesque mine d'or et de cuivre.", hq: "Indonésie", groupId: "Freeport-McMoRan" },
+        { name: "Oyu Tolgoi", lat: 43.0113, lng: 106.1417, type: "Mining Site (Copper)", description: "L'un des plus grands gisements cuivre-or.", hq: "Mongolie", groupId: "Rio Tinto" },
+        { name: "Kamoa-Kakula", lat: -10.9250, lng: 25.3333, type: "Mining Site (Copper)", description: "Gigantesque complexe de cuivre à très haute teneur (Ivanhoe Mines).", hq: "RDC" },
+        
+        { name: "Nevada Gold Mines (Carlin Trend)", lat: 40.8324, lng: -116.1485, type: "Mining Site (Gold)", description: "Plus grand complexe aurifère mondial.", hq: "USA", groupId: "Barrick" },
+        { name: "Muruntau", lat: 41.5036, lng: 64.6067, type: "Mining Site (Gold)", description: "L'une des plus grandes mines d'or à ciel ouvert.", hq: "Ouzbékistan" },
+        { name: "Olimpiada", lat: 59.8653, lng: 92.9372, type: "Mining Site (Gold)", description: "Géant aurifère russe.", hq: "Russie" },
+        { name: "Kibali", lat: 3.1250, lng: 29.5630, type: "Mining Site (Gold)", description: "L'une des plus grandes mines d'or d'Afrique.", hq: "RDC", groupId: "Barrick" },
+        
+        { name: "Carajás", lat: -6.0656, lng: -50.2106, type: "Mining Site (Iron)", description: "Plus grande mine de fer à ciel ouvert (Vale).", hq: "Brésil", groupId: "Vale" },
+        { name: "Mount Whaleback", lat: -23.3619, lng: 119.6706, type: "Mining Site (Iron)", description: "Une des plus grandes mines de fer (BHP).", hq: "Australie", groupId: "BHP" },
+        { name: "Kiruna", lat: 67.8486, lng: 20.1942, type: "Mining Site (Iron)", description: "La plus grande mine de fer souterraine du monde (LKAB).", hq: "Suède" },
+        
+        { name: "Greenbushes", lat: -33.8603, lng: 116.0594, type: "Mining Site (Lithium)", description: "Plus grande mine de lithium en roche dure.", hq: "Australie", groupId: "Tianqi Lithium Corporation" },
+        { name: "Salar de Atacama", lat: -23.5000, lng: -68.1667, type: "Mining Site (Lithium)", description: "Principal site d'extraction par saumure mondiale.", hq: "Chili", groupId: "SQM" },
+        
+        { name: "Jwaneng", lat: -24.5244, lng: 24.7119, type: "Mining Site (Diamond)", description: "Mine de diamants la plus riche du monde en valeur.", hq: "Botswana", groupId: "De Beers Group" },
+        { name: "Diavik", lat: 64.4961, lng: -110.2747, type: "Mining Site (Diamond)", description: "Emblématique mine de diamants sur une île.", hq: "Canada", groupId: "Rio Tinto" },
+        
+        { name: "McArthur River", lat: 57.7658, lng: -105.0508, type: "Mining Site (Coal/Uranium/Other)", description: "Plus grande mine d'uranium à haute teneur.", hq: "Canada" },
+        { name: "North Antelope Rochelle", lat: 43.5133, lng: -105.2917, type: "Mining Site (Coal/Uranium/Other)", description: "Plus grande mine de charbon des USA.", hq: "USA" },
+        { name: "Norilsk", lat: 69.3535, lng: 88.2027, type: "Mining Site (Coal/Uranium/Other)", description: "Géant du Nickel, Cuivre et Palladium.", hq: "Russie" },
+
+        // NOUVEAUX AJOUTS (Precious metals, Mid-tier, Base metals, Coal, Diamonds, State-owned, EPCM)
+        { name: "Agnico Eagle Mines", lat: 43.6532, lng: -79.3832, type: "Major Miner HQ", description: "Large gold producer.", hq: "Toronto, Canada" },
+        { name: "Gold Fields", lat: -26.2041, lng: 28.0473, type: "Major Miner HQ", description: "Large gold producer.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Kinross Gold", lat: 43.6532, lng: -79.3832, type: "Major Miner HQ", description: "Large gold producer.", hq: "Toronto, Canada" },
+        { name: "Harmony Gold", lat: -26.1772, lng: 27.7025, type: "Major Miner HQ", description: "Large gold producer.", hq: "Randfontein, Afrique du Sud" },
+        { name: "Pan American Silver", lat: 49.2827, lng: -123.1207, type: "Major Miner HQ", description: "Silver and gold producer.", hq: "Vancouver, Canada" },
+        { name: "Impala Platinum (Implats)", lat: -26.2041, lng: 28.0473, type: "Major Miner HQ", description: "Platinum group metals producer.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Northam Platinum", lat: -26.2041, lng: 28.0473, type: "Major Miner HQ", description: "Platinum group metals producer.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Lundin Mining", lat: 43.6532, lng: -79.3832, type: "Major Miner HQ", description: "Copper, zinc, nickel.", hq: "Toronto, Canada" },
+        { name: "First Quantum Minerals", lat: 49.2827, lng: -123.1207, type: "Major Miner HQ", description: "Copper, nickel.", hq: "Vancouver, Canada" },
+        { name: "Endeavour Mining", lat: 51.5074, lng: -0.1278, type: "Major Miner HQ", description: "Gold (Africa-focused).", hq: "Londres, UK" },
+        { name: "IAMGOLD", lat: 43.6532, lng: -79.3832, type: "Major Miner HQ", description: "Gold producer.", hq: "Toronto, Canada" },
+        { name: "Resolute Mining", lat: -31.9505, lng: 115.8605, type: "Major Miner HQ", description: "Gold producer.", hq: "Perth, Australie" },
+        { name: "Perseus Mining", lat: -31.9455, lng: 115.8239, type: "Major Miner HQ", description: "Gold producer.", hq: "Subiaco, Australie" },
+        { name: "Centamin", lat: 51.5074, lng: -0.1278, type: "Major Miner HQ", description: "Gold producer.", hq: "Londres, UK" },
+        { name: "Pan African Resources", lat: -26.2041, lng: 28.0473, type: "Major Miner HQ", description: "Gold producer.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "OceanaGold", lat: -37.8136, lng: 144.9631, type: "Major Miner HQ", description: "Gold, copper.", hq: "Melbourne, Australie" },
+        { name: "SSR Mining", lat: 39.7392, lng: -104.9903, type: "Major Miner HQ", description: "Gold, silver.", hq: "Denver, USA" },
+        { name: "Southern Copper Corporation", lat: 33.4484, lng: -112.0740, type: "Major Miner HQ", description: "Copper producer.", hq: "Phoenix, USA" },
+        { name: "Ivanhoe Mines", lat: 49.2827, lng: -123.1207, type: "Major Miner HQ", description: "Copper, zinc, PGM.", hq: "Vancouver, Canada" },
+        { name: "MMG", lat: -37.8136, lng: 144.9631, type: "Major Miner HQ", description: "Copper, zinc.", hq: "Melbourne, Australie" },
+        { name: "Hudbay Minerals", lat: 43.6532, lng: -79.3832, type: "Major Miner HQ", description: "Copper, zinc, gold.", hq: "Toronto, Canada" },
+        { name: "Eramet", lat: 48.8566, lng: 2.3522, type: "Major Miner HQ", description: "Manganese, nickel, lithium.", hq: "Paris, France" },
+        { name: "SQM", lat: -33.4489, lng: -70.6693, type: "Major Miner HQ", description: "Lithium, potash.", hq: "Santiago, Chili", groupId: "SQM", isHQ: true },
+        { name: "Albemarle", lat: 35.2271, lng: -80.8431, type: "Major Miner HQ", description: "Lithium.", hq: "Charlotte, USA" },
+        { name: "Pilbara Minerals", lat: -31.9505, lng: 115.8605, type: "Major Miner HQ", description: "Lithium.", hq: "Perth, Australie" },
+        { name: "Arcadium Lithium", lat: 39.9526, lng: -75.1652, type: "Major Miner HQ", description: "Lithium.", hq: "Philadelphie, USA" },
+        { name: "Peabody Energy", lat: 38.6270, lng: -90.1994, type: "Major Miner HQ", description: "Thermal and metallurgical coal.", hq: "St. Louis, USA" },
+        { name: "China Shenhua Energy", lat: 39.9042, lng: 116.4074, type: "Major Miner HQ", description: "Coal (state-owned).", hq: "Beijing, Chine" },
+        { name: "Adani Mining", lat: 23.0225, lng: 72.5714, type: "Major Miner HQ", description: "Coal.", hq: "Ahmedabad, Inde" },
+        { name: "Yancoal", lat: -33.8688, lng: 151.2093, type: "Major Miner HQ", description: "Coal.", hq: "Sydney, Australie" },
+        { name: "Exxaro Resources", lat: -25.7479, lng: 28.2293, type: "Major Miner HQ", description: "Coal.", hq: "Pretoria, Afrique du Sud" },
+        { name: "Thungela Resources", lat: -26.2041, lng: 28.0473, type: "Major Miner HQ", description: "Coal.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "De Beers Group", lat: 51.5074, lng: -0.1278, type: "Major Miner HQ", description: "Diamonds.", hq: "Londres, UK", groupId: "De Beers Group", isHQ: true },
+        { name: "Alrosa", lat: 55.7558, lng: 37.6173, type: "Major Miner HQ", description: "Diamonds (state-linked).", hq: "Moscou, Russie" },
+        { name: "Petra Diamonds", lat: 51.5074, lng: -0.1278, type: "Major Miner HQ", description: "Diamonds.", hq: "Londres, UK" },
+        { name: "Lucara Diamond", lat: 49.2827, lng: -123.1207, type: "Major Miner HQ", description: "Diamonds.", hq: "Vancouver, Canada" },
+        { name: "Kazatomprom", lat: 51.1694, lng: 71.4491, type: "Major Miner HQ", description: "Uranium (state-owned).", hq: "Astana, Kazakhstan" },
+        { name: "Debswana", lat: -24.6282, lng: 25.9231, type: "Major Miner HQ", description: "Diamonds (JV with De Beers).", hq: "Gaborone, Botswana" },
+        { name: "Gécamines", lat: -11.6609, lng: 27.4794, type: "Major Miner HQ", description: "Copper, cobalt (state-owned).", hq: "Lubumbashi, RDC" },
+        { name: "OCP Group", lat: 33.5731, lng: -7.5898, type: "Major Miner HQ", description: "Phosphate.", hq: "Casablanca, Maroc" },
+        { name: "NMDC", lat: 17.3850, lng: 78.4867, type: "Major Miner HQ", description: "Iron ore (state-owned).", hq: "Hyderabad, Inde" },
+        { name: "Coal India Limited", lat: 22.5726, lng: 88.3639, type: "Major Miner HQ", description: "Coal (state-owned).", hq: "Kolkata, Inde" },
+        { name: "Saudi Ma'aden", lat: 24.7136, lng: 46.6753, type: "Major Miner HQ", description: "Phosphate, gold, aluminum.", hq: "Riyadh, Arabie Saoudite" },
+        { name: "Jacobs", lat: 32.7767, lng: -96.7970, type: "EPCM", description: "EPCM and consulting across mining, water, tailings.", hq: "Dallas, USA" },
+        { name: "Wood", lat: 57.1497, lng: -2.0943, type: "EPCM", description: "Mining EPCM, studies, project delivery.", hq: "Aberdeen, UK" },
+        { name: "Technip Energies", lat: 48.8566, lng: 2.3522, type: "EPCM", description: "Selective involvement in mining-related processing.", hq: "Paris, France" },
+        { name: "Ausenco", lat: -27.4698, lng: 153.0251, type: "EPCM", description: "Specialist in minerals processing.", hq: "Brisbane, Australie" },
+        { name: "Lycopodium", lat: -31.9505, lng: 115.8605, type: "EPCM", description: "EPC/EPCM delivery of gold processing plants.", hq: "Perth, Australie" },
+        { name: "DRA Global", lat: -26.2041, lng: 28.0473, type: "EPCM", description: "Strong presence in Africa and globally; EPCM, EPC.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Sedgman", lat: -27.4698, lng: 153.0251, type: "EPCM", description: "Mineral processing and EPCM.", hq: "Brisbane, Australie" },
+        { name: "Murray & Roberts", lat: -26.2041, lng: 28.0473, type: "EPCM", description: "EPC and EPCM with strong African footprint.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "SRK Consulting", lat: -26.2041, lng: 28.0473, type: "Engineering Consultant", description: "Specialist mining consultancy.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Metso", lat: 60.2055, lng: 24.6559, type: "Equipment Provider", description: "Modular plants, processing solutions, and EPC-style projects.", hq: "Espoo, Finlande" },
+        { name: "FLSmidth", lat: 55.6761, lng: 12.5683, type: "Equipment Provider", description: "EPC, process design, and equipment supply.", hq: "Copenhague, Danemark" },
+        { name: "Thyssenkrupp Industrial Solutions", lat: 51.4556, lng: 7.0116, type: "Equipment Provider", description: "Large-scale EPC projects.", hq: "Essen, Allemagne" },
+        { name: "Monadelphous", lat: -31.9505, lng: 115.8605, type: "EPCM", description: "Engineering and construction services.", hq: "Perth, Australie" },
+        { name: "Downer Group", lat: -33.8688, lng: 151.2093, type: "EPCM", description: "EPC, mining services.", hq: "Sydney, Australie" },
+        { name: "NRW Holdings", lat: -31.9505, lng: 115.8605, type: "EPCM", description: "Mining construction and EPC services.", hq: "Perth, Australie" },
+        { name: "MCC", lat: 39.9042, lng: 116.4074, type: "EPCM", description: "Large EPC contractor for mining and metallurgical projects.", hq: "Beijing, Chine" },
+        { name: "Sinosteel", lat: 39.9042, lng: 116.4074, type: "EPCM", description: "EPC and mining services.", hq: "Beijing, Chine" },
+        { name: "WBHO", lat: -26.2041, lng: 28.0473, type: "EPCM", description: "African EPC contractor.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Aveng / McConnell Dowell", lat: -26.2041, lng: 28.0473, type: "EPCM", description: "African EPC contractor.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Group Five", lat: -26.2041, lng: 28.0473, type: "EPCM", description: "African EPC contractor (legacy).", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Zutari", lat: -25.7479, lng: 28.2293, type: "Engineering Consultant", description: "Engineering consultancy (formerly Aurecon Africa).", hq: "Pretoria, Afrique du Sud" },
+        { name: "Knight Piésold", lat: -26.1076, lng: 28.0567, type: "Engineering Consultant", description: "Tailings, water, geotechnical specialist.", hq: "Sandton, Afrique du Sud" },
+        
+        // AUTRES GRANDS NOMS (Ajouts Supplémentaires)
+        { name: "PT Bayan Resources Tbk", lat: -6.2088, lng: 106.8456, type: "Major Miner HQ", description: "Coal producer.", hq: "Jakarta, Indonésie" },
+        { name: "Zijin Mining Group Company Limited", lat: 24.4798, lng: 118.0894, type: "Major Miner HQ", description: "Gold, copper, zinc.", hq: "Xiamen, Chine" },
+        { name: "Grupo Mexico S.A.B. de C.V.", lat: 19.4326, lng: -99.1332, type: "Major Miner HQ", description: "Copper and silver producer.", hq: "Mexico City, Mexique" },
+        { name: "Shaanxi Coal Industry Company Limited", lat: 34.3416, lng: 108.9398, type: "Major Miner HQ", description: "Coal producer.", hq: "Xi'an, Chine" },
+        { name: "Yankuang Energy Group Company Limited", lat: 35.4021, lng: 116.9630, type: "Major Miner HQ", description: "Coal and energy.", hq: "Zoucheng, Chine" },
+        { name: "Tianqi Lithium Corporation", lat: 30.6586, lng: 104.0648, type: "Major Miner HQ", description: "Lithium.", hq: "Chengdu, Chine", groupId: "Tianqi Lithium Corporation", isHQ: true },
+        { name: "Hindustan Zinc Limited", lat: 24.5854, lng: 73.7125, type: "Major Miner HQ", description: "Zinc, lead, silver.", hq: "Udaipur, Inde" },
+        { name: "The Mosaic Company", lat: 27.9506, lng: -82.4572, type: "Major Miner HQ", description: "Potash and phosphate.", hq: "Tampa, USA" },
+        { name: "China Coal Energy Company Limited", lat: 39.9042, lng: 116.4074, type: "Major Miner HQ", description: "Coal.", hq: "Beijing, Chine" },
+        { name: "CMOC Group Limited", lat: 34.6196, lng: 112.4540, type: "Major Miner HQ", description: "Molybdenum, tungsten, copper, cobalt.", hq: "Luoyang, Chine" },
+        { name: "Newcrest Mining Limited", lat: -37.8136, lng: 144.9631, type: "Major Miner HQ", description: "Gold producer (Acquired by Newmont).", hq: "Melbourne, Australie" },
+        { name: "South32 Limited", lat: -31.9505, lng: 115.8605, type: "Major Miner HQ", description: "Alumina, aluminum, bauxite, metallurgical coal.", hq: "Perth, Australie" },
+        { name: "Shandong Gold Mining Company Limited", lat: 36.6512, lng: 117.1201, type: "Major Miner HQ", description: "Gold producer.", hq: "Jinan, Chine" },
+        { name: "Mineral Resources Limited", lat: -31.9505, lng: 115.8605, type: "Major Miner HQ", description: "Iron ore, lithium.", hq: "Perth, Australie" },
+        { name: "Cameco Corporation", lat: 52.1332, lng: -106.6700, type: "Major Miner HQ", description: "Uranium.", hq: "Saskatoon, Canada" },
+        { name: "Northern Star Resources Limited", lat: -31.9505, lng: 115.8605, type: "Major Miner HQ", description: "Gold producer.", hq: "Perth, Australie" },
+        { name: "AngloGold Ashanti Limited", lat: 39.7392, lng: -104.9903, type: "Major Miner HQ", description: "Gold producer.", hq: "Denver, USA" },
+        { name: "Fresnillo plc", lat: 19.4326, lng: -99.1332, type: "Major Miner HQ", description: "Precious metals (Silver/Gold).", hq: "Mexico City, Mexique" },
+        { name: "Sibanye-Stillwater Limited", lat: -26.1367, lng: 27.9333, type: "Major Miner HQ", description: "PGMs, Gold.", hq: "Johannesburg, Afrique du Sud" },
+        { name: "Jiangxi Copper Corporation Limited", lat: 28.6820, lng: 115.8579, type: "Major Miner HQ", description: "Copper producer.", hq: "Nanchang, Chine" }
+    ];
+
+    // Création d'un objet pour stocker un MarkerClusterGroup par type
+    const layerGroups = {};
+    for (const type in colors) {
+        if(type !== 'Other') { /* On ignore 'Other' s'il n'est pas utilisé activement  */
+           layerGroups[type] = L.markerClusterGroup({
+                chunkedLoading: true,
+                maxClusterRadius: 50,
+                spiderfyOnMaxZoom: true,
+                showCoverageOnHover: false,
+                zoomToBoundsOnClick: true
+            });
+            // Ajouter tous les groupes à la carte par défaut
+            map.addLayer(layerGroups[type]);
+        }
+    }
+
+    // Répartition des marqueurs dans le bon groupe
+    companiesData.forEach(function(company) {
+        const type = company.type;
+        const markerColor = colors[type] || colors['Other'];
+        
+        let commodityBadge = '';
+        if (type.includes('Copper')) commodityBadge = '<span class="commodity-badge">Cuivre</span>';
+        else if (type.includes('Gold')) commodityBadge = '<span class="commodity-badge">Or</span>';
+        else if (type.includes('Iron')) commodityBadge = '<span class="commodity-badge">Fer</span>';
+        else if (type.includes('Lithium')) commodityBadge = '<span class="commodity-badge">Lithium</span>';
+        else if (type.includes('Diamond')) commodityBadge = '<span class="commodity-badge">Diamant</span>';
+        else if (type.includes('Coal/Uranium/Other')) commodityBadge = '<span class="commodity-badge">Nickel/Uranium/Charbon</span>';
+
+        const popupContent = `
+            <div>
+                <h3>${company.name}</h3>
+                <span class="type-badge" style="background-color: ${markerColor};">${type.split(' (')[0]}</span>
+                ${commodityBadge}
+                <p><strong>Localisation / HQ :</strong> ${company.hq}</p>
+                <p>${company.description}</p>
+            </div>
+        `;
+
+        if(company.lat && company.lng) {
+            let m = L.marker([company.lat, company.lng], {icon: getCustomIcon(type)})
+             .bindPopup(popupContent, {className: 'custom-popup'});
+            
+            company.markerObj = m;
+            if(layerGroups[type]) {
+                layerGroups[type].addLayer(m);
+            }
+        }
+    });
+
+    // Création du contrôle customisé (Légende + Filtres à cocher)
+    var customLegendFilter = L.control({position: 'bottomright'});
+
+    customLegendFilter.onAdd = function (map) {
+        var div = L.DomUtil.create('div', 'info legend');
+        div.innerHTML = '<h4>Filtres (Types & Ressources)</h4>';
+        
+        for (let type in colors) {
+            if (type === 'Other') continue;
+            
+            let displayName = type;
+            if (type.startsWith('Mining Site')) {
+                displayName = "Mine - " + type.split('(')[1].replace(')', '');
+            }
+            
+            // Création de l'interface du filtre
+            const label = document.createElement('label');
+            label.className = 'legend-item';
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = true; // Caché s'il est décoché
+            checkbox.value = type;
+            
+            // Logique du filtre : ajouter ou retirer le ClusterGroup de la carte
+            checkbox.addEventListener('change', function() {
+                if (this.checked) {
+                    map.addLayer(layerGroups[this.value]);
+                } else {
+                    map.removeLayer(layerGroups[this.value]);
+                }
+            });
+
+            const colorSpan = document.createElement('span');
+            colorSpan.className = 'legend-color';
+            colorSpan.style.backgroundColor = colors[type];
+
+            const textSpan = document.createElement('span');
+            textSpan.textContent = displayName;
+
+            label.appendChild(checkbox);
+            label.appendChild(colorSpan);
+            label.appendChild(textSpan);
+            
+            div.appendChild(label);
+        }
+        
+        // Sous-menu contenant la liste de toutes les entreprises
+        const companyListContainer = document.createElement('div');
+        companyListContainer.className = 'company-list-container';
+        
+        const toggleBtn = document.createElement('div');
+        toggleBtn.className = 'company-list-toggle';
+        toggleBtn.innerHTML = '▶ Liste des sites & entreprises (' + companiesData.length + ')';
+        
+        const companyList = document.createElement('div');
+        companyList.className = 'company-list';
+        
+        // Trier les entreprises par nom
+        const sortedCompanies = [...companiesData].sort((a, b) => a.name.localeCompare(b.name));
+        
+        sortedCompanies.forEach(company => {
+            const item = document.createElement('div');
+            item.className = 'company-item';
+            
+            const colorDot = document.createElement('span');
+            colorDot.className = 'company-item-color';
+            colorDot.style.backgroundColor = colors[company.type] || colors['Other'];
+            
+            const textNode = document.createTextNode(company.name);
+            
+            item.appendChild(colorDot);
+            item.appendChild(textNode);
+            
+            // Au clic, zoomer sur l'entreprise
+            item.addEventListener('click', () => {
+                if(company.lat && company.lng) {
+                    map.flyTo([company.lat, company.lng], 10);
+                    // On peut aussi ouvrir le popup correspondant, 
+                    // mais cela demanderait de garder la référence au marker.
+                    // FlyTo est déjà très bien !
+                }
+            });
+            
+            companyList.appendChild(item);
+        });
+        
+        toggleBtn.addEventListener('click', () => {
+            companyList.classList.toggle('active');
+            if(companyList.classList.contains('active')) {
+                toggleBtn.innerHTML = '▼ Liste des sites & entreprises (' + companiesData.length + ')';
+            } else {
+                toggleBtn.innerHTML = '▶ Liste des sites & entreprises (' + companiesData.length + ')';
+            }
+        });
+        
+        companyListContainer.appendChild(toggleBtn);
+        companyListContainer.appendChild(companyList);
+        
+        div.appendChild(companyListContainer);
+        
+        // === BOUTON ET SELECTEUR POUR AFFICHER LIENS RESEAUX ===
+        const networkToggleContainer = document.createElement('div');
+        networkToggleContainer.style.marginTop = '15px';
+        networkToggleContainer.style.borderTop = '2px solid #eee';
+        networkToggleContainer.style.paddingTop = '10px';
+        
+        const networkTitle = document.createElement('div');
+        networkTitle.textContent = 'Réseaux d\'entreprises (HQ-Filiales)';
+        networkTitle.style.fontWeight = 'bold';
+        networkTitle.style.fontSize = '14px';
+        networkTitle.style.marginBottom = '5px';
+        networkTitle.style.color = '#e44d26';
+        
+        // Trouver tous les groupes uniques disponibles
+        const availableGroups = new Set();
+        companiesData.forEach(c => {
+            if (c.groupId) availableGroups.add(c.groupId);
+        });
+
+        const networkSelect = document.createElement('select');
+        networkSelect.style.width = '100%';
+        networkSelect.style.padding = '5px';
+        networkSelect.style.borderRadius = '4px';
+        networkSelect.style.border = '1px solid #ccc';
+        
+        // Option par défaut
+        const defaultOption = document.createElement('option');
+        defaultOption.value = "";
+        defaultOption.textContent = "Masquer les réseaux";
+        networkSelect.appendChild(defaultOption);
+
+        // Ajouter une option pour chaque groupe détecté
+        availableGroups.forEach(group => {
+            const option = document.createElement('option');
+            option.value = group;
+            option.textContent = "Afficher le réseau : " + group;
+            networkSelect.appendChild(option);
+        });
+        
+        networkSelect.addEventListener('change', function() {
+            selectedNetwork = this.value;
+            drawNetworkLinks();
+        });
+
+        networkToggleContainer.appendChild(networkTitle);
+        networkToggleContainer.appendChild(networkSelect);
+        div.appendChild(networkToggleContainer);
+
+        // Empêcher les clics dans la légende de créer un "click" sur la carte derrière
+        L.DomEvent.disableClickPropagation(div);
+
+        return div;
+    };
+
+    customLegendFilter.addTo(map);
+
+    // === SYSTEME DE LIENS HQ <-> FILIALES ===
+    var polylines = L.layerGroup().addTo(map);
+    var selectedNetwork = "";
+
+    function drawNetworkLinks() {
+        polylines.clearLayers();
+        if(selectedNetwork === "") return;
+
+        const groups = {};
+        companiesData.forEach(c => {
+            if(c.groupId && c.markerObj && c.groupId === selectedNetwork) {
+                if(!groups[c.groupId]) groups[c.groupId] = { hq: null, subsidiaries: [] };
+                if(c.isHQ) groups[c.groupId].hq = c.markerObj;
+                else groups[c.groupId].subsidiaries.push(c.markerObj);
+            }
+        });
+
+        for(let g in groups) {
+            let hq = groups[g].hq;
+            if(!hq) continue;
+            let hqLatlng = hq.getLatLng();
+            groups[g].subsidiaries.forEach(sub => {
+                let subLatlng = sub.getLatLng();
+                L.polyline([hqLatlng, subLatlng], {color: '#3498db', weight: 2, opacity: 0.6, dashArray: '5, 5'}).addTo(polylines);
+            });
+        }
+    }
+
+</script>
+
+</body>
+</html>
